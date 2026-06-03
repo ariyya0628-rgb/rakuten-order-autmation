@@ -64,7 +64,7 @@ def rms_session() -> requests.Session:
     session.headers.update(
         {
             "Authorization": esa_auth_header(),
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
             "Accept": "application/json",
         }
     )
@@ -72,25 +72,18 @@ def rms_session() -> requests.Session:
 
 
 def resolve_google_access_token() -> str:
-    token = os.getenv("GOOGLE_SHEETS_ACCESS_TOKEN")
-    if token:
-        return token
-
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if sa_json:
-        try:
-            info = json.loads(sa_json)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Paste only the service-account JSON object, starting with { and ending with }."
-            ) from exc
-        credentials = service_account.Credentials.from_service_account_info(info, scopes=[GOOGLE_SHEETS_SCOPE])
-        credentials.refresh(GoogleAuthRequest())
-        if not credentials.token:
-            raise RuntimeError("Failed to obtain Google access token from service account JSON")
-        return credentials.token
-
-    raise RuntimeError("Missing Google Sheets credentials: set GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not sa_json:
+        raise RuntimeError("Missing Google Sheets credentials: set GOOGLE_SERVICE_ACCOUNT_JSON")
+    try:
+        info = json.loads(sa_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Paste only the JSON object from { to }.") from exc
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=[GOOGLE_SHEETS_SCOPE])
+    credentials.refresh(GoogleAuthRequest())
+    if not credentials.token:
+        raise RuntimeError("Failed to obtain Google access token from service account JSON")
+    return credentials.token
 
 
 def sheets_headers(token: str) -> dict[str, str]:
@@ -142,8 +135,6 @@ def quote_range(sheet_name: str, range_a1: str) -> str:
 
 
 def spreadsheet_meta(token: str) -> dict[str, Any]:
-    if not SPREADSHEET_ID:
-        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is empty")
     return sheets_get(token, f"/spreadsheets/{SPREADSHEET_ID}", {"includeGridData": "false"})
 
 
@@ -181,33 +172,62 @@ def existing_order_numbers(token: str) -> set[str]:
     return {str(row[0]).strip() for row in rows[2:] if row and str(row[0]).strip()}
 
 
-def rms_datetime(value: dt.datetime) -> str:
-    local = value.astimezone(dt.timezone(dt.timedelta(hours=9)))
-    return local.strftime("%Y-%m-%dT%H:%M:%S%z")
+def rms_datetime_basic(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def rms_datetime_colon(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone(dt.timedelta(hours=9))).isoformat(timespec="seconds")
+
+
+def rms_date_only(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+
+
+def search_payloads(start: dt.datetime, end: dt.datetime, page: int) -> list[tuple[str, dict[str, Any]]]:
+    paging_upper = {"requestRecordsAmount": 1000, "requestPage": page}
+    paging_lower = {"requestRecordsAmount": 1000, "requestPage": page}
+    start_basic = rms_datetime_basic(start)
+    end_basic = rms_datetime_basic(end)
+    start_colon = rms_datetime_colon(start)
+    end_colon = rms_datetime_colon(end)
+    start_day = rms_date_only(start)
+    end_day = rms_date_only(end)
+    base = {"dateType": 1, "orderProgressList": ORDER_PROGRESS}
+    return [
+        ("basic_with_PaginationRequestModel", {**base, "startDatetime": start_basic, "endDatetime": end_basic, "PaginationRequestModel": paging_upper}),
+        ("basic_with_paginationRequestModel", {**base, "startDatetime": start_basic, "endDatetime": end_basic, "paginationRequestModel": paging_lower}),
+        ("basic_without_pagination", {**base, "startDatetime": start_basic, "endDatetime": end_basic}),
+        ("colon_with_PaginationRequestModel", {**base, "startDatetime": start_colon, "endDatetime": end_colon, "PaginationRequestModel": paging_upper}),
+        ("date_only_with_PaginationRequestModel", {**base, "startDatetime": start_day, "endDatetime": end_day, "PaginationRequestModel": paging_upper}),
+    ]
 
 
 def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
-    order_numbers: list[str] = []
-    page = 1
-    while True:
-        payload = {
-            "dateType": 1,
-            "orderProgressList": ORDER_PROGRESS,
-            "startDatetime": rms_datetime(start),
-            "endDatetime": rms_datetime(end),
-            "PaginationRequestModel": {
-                "requestRecordsAmount": 1000,
-                "requestPage": page,
-            },
-        }
-        data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
-        order_numbers.extend(str(value).strip() for value in (data.get("orderNumberList") or []) if str(value).strip())
-        pagination = data.get("PaginationResponseModel") or data.get("paginationResponseModel") or {}
-        total_pages = int(pagination.get("totalPages") or page)
-        if page >= total_pages:
-            break
-        page += 1
-    return order_numbers
+    errors: list[str] = []
+    for variant_name, first_payload in search_payloads(start, end, 1):
+        order_numbers: list[str] = []
+        page = 1
+        print(f"trying_searchOrder_variant={variant_name}")
+        try:
+            while True:
+                payload = first_payload if page == 1 else dict(first_payload)
+                if "PaginationRequestModel" in payload:
+                    payload["PaginationRequestModel"] = {"requestRecordsAmount": 1000, "requestPage": page}
+                if "paginationRequestModel" in payload:
+                    payload["paginationRequestModel"] = {"requestRecordsAmount": 1000, "requestPage": page}
+                data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
+                order_numbers.extend(str(value).strip() for value in (data.get("orderNumberList") or []) if str(value).strip())
+                pagination = data.get("PaginationResponseModel") or data.get("paginationResponseModel") or {}
+                total_pages = int(pagination.get("totalPages") or page)
+                if page >= total_pages:
+                    print(f"searchOrder_variant_ok={variant_name} pages={page} orders={len(order_numbers)}")
+                    return order_numbers
+                page += 1
+        except RuntimeError as exc:
+            errors.append(f"{variant_name}: {exc}")
+            print(f"searchOrder_variant_failed={variant_name} detail={exc}")
+    raise RuntimeError("searchOrder failed for all payload variants: " + " | ".join(errors))
 
 
 def get_orders(session: requests.Session, order_numbers: list[str]) -> list[dict[str, Any]]:
@@ -367,11 +387,7 @@ def format_asin_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
             formatted.append(
                 {
                     "values": [
-                        {
-                            "userEnteredValue": {
-                                "formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'
-                            }
-                        }
+                        {"userEnteredValue": {"formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'}}
                     ]
                 }
             )
