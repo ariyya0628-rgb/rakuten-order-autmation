@@ -12,16 +12,14 @@ import requests
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 
-SPREADSHEET_ID = os.getenv(
-    "GOOGLE_SHEETS_SPREADSHEET_ID",
-    "1wOqqEtElzHyxOQLfmGcjbqNxQXWcJmtNOxJwk5s2M_o",
-)
+DEFAULT_SPREADSHEET_ID = "1wOqqEtElzHyxOQLfmGcjbqNxQXWcJmtNOxJwk5s2M_o"
+SPREADSHEET_ID = (os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID") or DEFAULT_SPREADSHEET_ID).strip()
 LEDGER_SHEET_NAME = "台帳管理"
 LOG_SHEET_NAME = "自動取込ログ"
 RMS_SEARCH_ENDPOINT = "/es/2.0/order/searchOrder/"
 RMS_GET_ENDPOINT = "/es/2.0/order/getOrder/"
-RMS_BASE = os.getenv("RMS_API_BASE", "https://api.rms.rakuten.co.jp")
-SHEETS_BASE = os.getenv("GOOGLE_SHEETS_API_BASE", "https://sheets.googleapis.com/v4")
+RMS_BASE = os.getenv("RMS_API_BASE", "https://api.rms.rakuten.co.jp").rstrip("/")
+SHEETS_BASE = os.getenv("GOOGLE_SHEETS_API_BASE", "https://sheets.googleapis.com/v4").rstrip("/")
 LOOKBACK_DAYS = 31
 ORDER_PROGRESS = [300]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
@@ -80,14 +78,19 @@ def resolve_google_access_token() -> str:
 
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if sa_json:
-        info = json.loads(sa_json)
+        try:
+            info = json.loads(sa_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Paste only the service-account JSON object, starting with { and ending with }."
+            ) from exc
         credentials = service_account.Credentials.from_service_account_info(info, scopes=[GOOGLE_SHEETS_SCOPE])
         credentials.refresh(GoogleAuthRequest())
         if not credentials.token:
             raise RuntimeError("Failed to obtain Google access token from service account JSON")
         return credentials.token
 
-    raise RuntimeError("Missing Google Sheets credentials: set GOOGLE_SHEETS_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON")
+    raise RuntimeError("Missing Google Sheets credentials: set GOOGLE_SERVICE_ACCOUNT_JSON")
 
 
 def sheets_headers(token: str) -> dict[str, str]:
@@ -103,11 +106,22 @@ def request_json(
     body: dict[str, Any] | None = None,
     timeout: int = 60,
 ) -> Any:
-    response = requests.request(method, url, headers=headers, params=params, json=body, timeout=timeout)
-    response.raise_for_status()
+    try:
+        response = requests.request(method, url, headers=headers, params=params, json=body, timeout=timeout)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"{method} {url} failed before response: {exc}") from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:1000]
+        raise RuntimeError(f"{method} {response.url} returned HTTP {response.status_code}: {detail}")
+
     if not response.text.strip():
         return {}
-    return response.json()
+    try:
+        return response.json()
+    except json.JSONDecodeError as exc:
+        detail = response.text.strip().replace("\n", " ")[:1000]
+        raise RuntimeError(f"{method} {response.url} returned non-JSON response: {detail}") from exc
 
 
 def rms_post(session: requests.Session, path: str, body: dict[str, Any]) -> Any:
@@ -128,6 +142,8 @@ def quote_range(sheet_name: str, range_a1: str) -> str:
 
 
 def spreadsheet_meta(token: str) -> dict[str, Any]:
+    if not SPREADSHEET_ID:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is empty")
     return sheets_get(token, f"/spreadsheets/{SPREADSHEET_ID}", {"includeGridData": "false"})
 
 
@@ -162,11 +178,7 @@ def values_get(token: str, sheet_name: str, range_a1: str) -> list[list[Any]]:
 
 def existing_order_numbers(token: str) -> set[str]:
     rows = values_get(token, LEDGER_SHEET_NAME, "E:E")
-    existing: set[str] = set()
-    for row in rows[2:]:
-        if row and str(row[0]).strip():
-            existing.add(str(row[0]).strip())
-    return existing
+    return {str(row[0]).strip() for row in rows[2:] if row and str(row[0]).strip()}
 
 
 def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
@@ -299,30 +311,31 @@ def rows_from_order(order: dict[str, Any]) -> list[LedgerRow]:
     return rows
 
 
+def cell_string(value: str) -> dict[str, Any]:
+    return {"userEnteredValue": {"stringValue": value}}
+
+
 def format_ledger_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for row in rows:
+        item_name_cell = (
+            {"userEnteredValue": {"formulaValue": f'=HYPERLINK("{RETAIL_URL.format(item_number=row.item_number)}","{escape_formula(row.item_name)}")'}}
+            if row.item_number
+            else cell_string(row.item_name)
+        )
         formatted.append(
             {
                 "values": [
                     {"userEnteredValue": {"numberValue": serial_date(row.order_date)}},
-                    {
-                        "userEnteredValue": {
-                            "formulaValue": (
-                                f'=HYPERLINK("{RETAIL_URL.format(item_number=row.item_number)}","{escape_formula(row.item_name)}")'
-                                if row.item_number
-                                else row.item_name
-                            )
-                        }
-                    },
-                    {"userEnteredValue": {"stringValue": row.item_number}},
-                    {"userEnteredValue": {"stringValue": row.order_number}},
+                    item_name_cell,
+                    cell_string(row.item_number),
+                    cell_string(row.order_number),
                     {"userEnteredValue": {"numberValue": row.unit_price}},
                     {"userEnteredValue": {"numberValue": row.quantity}},
                     {"userEnteredValue": {"numberValue": row.sales_amount}},
-                    {"userEnteredValue": {"stringValue": row.ship_family}},
-                    {"userEnteredValue": {"stringValue": row.ship_first}},
-                    {"userEnteredValue": {"stringValue": row.prefecture}},
+                    cell_string(row.ship_family),
+                    cell_string(row.ship_first),
+                    cell_string(row.prefecture),
                 ]
             }
         )
@@ -356,51 +369,21 @@ def build_append_requests(sheet_id: int, start_row_index: int, rows: list[Ledger
     requests: list[dict[str, Any]] = [
         {
             "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": source_row,
-                    "endRowIndex": source_row + 1,
-                    "startColumnIndex": 1,
-                    "endColumnIndex": 11,
-                },
-                "destination": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row_index,
-                    "endRowIndex": start_row_index + len(rows),
-                    "startColumnIndex": 1,
-                    "endColumnIndex": 11,
-                },
+                "source": {"sheetId": sheet_id, "startRowIndex": source_row, "endRowIndex": source_row + 1, "startColumnIndex": 1, "endColumnIndex": 11},
+                "destination": {"sheetId": sheet_id, "startRowIndex": start_row_index, "endRowIndex": start_row_index + len(rows), "startColumnIndex": 1, "endColumnIndex": 11},
                 "pasteType": "PASTE_FORMAT",
             }
         },
         {
             "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": source_row,
-                    "endRowIndex": source_row + 1,
-                    "startColumnIndex": 15,
-                    "endColumnIndex": 16,
-                },
-                "destination": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row_index,
-                    "endRowIndex": start_row_index + len(rows),
-                    "startColumnIndex": 15,
-                    "endColumnIndex": 16,
-                },
+                "source": {"sheetId": sheet_id, "startRowIndex": source_row, "endRowIndex": source_row + 1, "startColumnIndex": 15, "endColumnIndex": 16},
+                "destination": {"sheetId": sheet_id, "startRowIndex": start_row_index, "endRowIndex": start_row_index + len(rows), "startColumnIndex": 15, "endColumnIndex": 16},
                 "pasteType": "PASTE_FORMAT",
             }
         },
         {
             "updateCells": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row_index,
-                    "endRowIndex": start_row_index + len(rows),
-                    "startColumnIndex": 1,
-                    "endColumnIndex": 11,
-                },
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row_index, "endRowIndex": start_row_index + len(rows), "startColumnIndex": 1, "endColumnIndex": 11},
                 "rows": ledger_rows,
                 "fields": "userEnteredValue",
             }
@@ -410,13 +393,7 @@ def build_append_requests(sheet_id: int, start_row_index: int, rows: list[Ledger
         requests.append(
             {
                 "updateCells": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row_index,
-                        "endRowIndex": start_row_index + len(rows),
-                        "startColumnIndex": 15,
-                        "endColumnIndex": 16,
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row_index, "endRowIndex": start_row_index + len(rows), "startColumnIndex": 15, "endColumnIndex": 16},
                     "rows": asin_rows,
                     "fields": "userEnteredValue",
                 }
@@ -425,15 +402,7 @@ def build_append_requests(sheet_id: int, start_row_index: int, rows: list[Ledger
     return requests
 
 
-def append_log(
-    token: str,
-    sheet_id: int,
-    ts: dt.datetime,
-    search_count: int,
-    added: int,
-    skipped: int,
-    error: str,
-) -> None:
+def append_log(token: str, sheet_id: int, ts: dt.datetime, search_count: int, added: int, skipped: int, error: str) -> None:
     body = {
         "requests": [
             {
@@ -442,11 +411,11 @@ def append_log(
                     "rows": [
                         {
                             "values": [
-                                {"userEnteredValue": {"stringValue": ts.isoformat(sep=" ", timespec="seconds")}},
+                                cell_string(ts.isoformat(sep=" ", timespec="seconds")),
                                 {"userEnteredValue": {"numberValue": search_count}},
                                 {"userEnteredValue": {"numberValue": added}},
                                 {"userEnteredValue": {"numberValue": skipped}},
-                                {"userEnteredValue": {"stringValue": error}},
+                                cell_string(error[:3000]),
                             ]
                         }
                     ],
@@ -493,9 +462,8 @@ def main() -> int:
             print("added=0 error=none")
             return 0
 
-        order_details = get_orders(session, new_order_numbers)
         rows: list[LedgerRow] = []
-        for order in order_details:
+        for order in get_orders(session, new_order_numbers):
             rows.extend(rows_from_order(order))
 
         if not rows:
@@ -509,11 +477,12 @@ def main() -> int:
         print(f"added={added_count} error=none")
         return 0
     except Exception as exc:  # noqa: BLE001
+        error_message = f"{type(exc).__name__}: {exc}"
+        print(f"added={added_count} error=yes detail={error_message}")
         try:
-            append_log(token, log_sheet_id, run_at, search_count, added_count, skipped_count, str(exc))
-        except Exception:
-            pass
-        print(f"added={added_count} error=yes")
+            append_log(token, log_sheet_id, run_at, search_count, added_count, skipped_count, error_message)
+        except Exception as log_exc:  # noqa: BLE001
+            print(f"log_error={type(log_exc).__name__}: {log_exc}")
         return 1
 
 
