@@ -319,10 +319,23 @@ def ledger_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
 
 
 def asin_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
-    return [
-        {"values": [{"userEnteredValue": {"formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'}}}]} if row.asin else {"values": []}
-        for row in rows
-    ]
+    formatted: list[dict[str, Any]] = []
+    for row in rows:
+        if row.asin:
+            formatted.append(
+                {
+                    "values": [
+                        {
+                            "userEnteredValue": {
+                                "formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'
+                            }
+                        }
+                    ]
+                }
+            )
+        else:
+            formatted.append({"values": []})
+    return formatted
 
 
 def build_append_requests(sheet_id_value: int, start_row_index: int, rows: list[LedgerRow]) -> list[dict[str, Any]]:
