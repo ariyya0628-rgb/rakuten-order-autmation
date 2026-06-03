@@ -24,7 +24,7 @@ jobs:
         env:
           RMS_SERVICE_SECRET: ${{ secrets.RMS_SERVICE_SECRET }}
           RMS_LICENSE_KEY: ${{ secrets.RMS_LICENSE_KEY }}
-          GOOGLE_SHEETS_ACCESS_TOKEN: ${{ secrets.GOOGLE_SHEETS_ACCESS_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
           RMS_API_BASE: https://api.rms.rakuten.co.jp
           GOOGLE_SHEETS_API_BASE: https://sheets.googleapis.com/v4
