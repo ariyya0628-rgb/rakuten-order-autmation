@@ -181,15 +181,33 @@ def existing_order_numbers(token: str) -> set[str]:
     return {str(row[0]).strip() for row in rows[2:] if row and str(row[0]).strip()}
 
 
+def rms_datetime(value: dt.datetime) -> str:
+    local = value.astimezone(dt.timezone(dt.timedelta(hours=9)))
+    return local.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
 def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
-    payload = {
-        "dateType": 1,
-        "orderProgressList": ORDER_PROGRESS,
-        "startDatetime": start.isoformat(),
-        "endDatetime": end.isoformat(),
-    }
-    data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
-    return [str(value).strip() for value in (data.get("orderNumberList") or []) if str(value).strip()]
+    order_numbers: list[str] = []
+    page = 1
+    while True:
+        payload = {
+            "dateType": 1,
+            "orderProgressList": ORDER_PROGRESS,
+            "startDatetime": rms_datetime(start),
+            "endDatetime": rms_datetime(end),
+            "PaginationRequestModel": {
+                "requestRecordsAmount": 1000,
+                "requestPage": page,
+            },
+        }
+        data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
+        order_numbers.extend(str(value).strip() for value in (data.get("orderNumberList") or []) if str(value).strip())
+        pagination = data.get("PaginationResponseModel") or data.get("paginationResponseModel") or {}
+        total_pages = int(pagination.get("totalPages") or page)
+        if page >= total_pages:
+            break
+        page += 1
+    return order_numbers
 
 
 def get_orders(session: requests.Session, order_numbers: list[str]) -> list[dict[str, Any]]:
