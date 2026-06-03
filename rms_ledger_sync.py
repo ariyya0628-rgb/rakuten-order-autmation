@@ -5,7 +5,7 @@ import dataclasses
 import datetime as dt
 import os
 import re
-from typing import Any, Iterable
+from typing import Any
 
 import requests
 
@@ -102,7 +102,8 @@ def sheets_post(token: str, path: str, body: dict[str, Any]) -> Any:
 
 
 def quote_range(sheet_name: str, range_a1: str) -> str:
-    return f"{sheet_name.replace("'", "''")}!{range_a1}"
+    quoted = sheet_name.replace("'", "''")
+    return f"{quoted}!{range_a1}"
 
 
 def spreadsheet_meta(token: str) -> dict[str, Any]:
