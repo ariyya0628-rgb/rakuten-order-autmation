@@ -60,13 +60,7 @@ def rms_auth_header() -> str:
 
 def rms_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update(
-        {
-            "Authorization": rms_auth_header(),
-            "Content-Type": "application/json; charset=utf-8",
-            "Accept": "application/json",
-        }
-    )
+    session.headers.update({"Authorization": rms_auth_header(), "Content-Type": "application/json; charset=utf-8", "Accept": "application/json"})
     return session
 
 
@@ -158,7 +152,7 @@ def search_windows(start: dt.datetime, end: dt.datetime) -> list[tuple[dt.dateti
         window_end = min(cursor + dt.timedelta(days=MAX_SEARCH_WINDOW_DAYS), end)
         windows.append((cursor, window_end))
         cursor = window_end + dt.timedelta(seconds=1)
-    return windows
+    return list(reversed(windows))
 
 
 def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
@@ -166,13 +160,7 @@ def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetim
     for window_index, (window_start, window_end) in enumerate(search_windows(start, end), start=1):
         page = 1
         while True:
-            payload = {
-                "dateType": 1,
-                "startDatetime": as_rms_datetime(window_start),
-                "endDatetime": as_rms_datetime(window_end),
-                "orderProgressList": ORDER_PROGRESS,
-                "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page},
-            }
+            payload = {"dateType": 1, "startDatetime": as_rms_datetime(window_start), "endDatetime": as_rms_datetime(window_end), "orderProgressList": ORDER_PROGRESS, "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page}}
             print(f"searchOrder_window={window_index} page={page} start={payload['startDatetime']} end={payload['endDatetime']}")
             data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
             for number in data.get("orderNumberList") or []:
@@ -275,21 +263,7 @@ def rows_from_order(order: dict[str, Any]) -> list[LedgerRow]:
             item_number = str(first_value(item, "itemNumber") or "").strip()
             unit_price = as_int(first_value(item, "price"))
             quantity = as_int(first_value(item, "units")) or 1
-            rows.append(
-                LedgerRow(
-                    order_date=order_date,
-                    item_name=str(first_value(item, "itemName") or "").strip(),
-                    item_number=item_number,
-                    order_number=order_number,
-                    unit_price=unit_price,
-                    quantity=quantity,
-                    sales_amount=package_total or unit_price * quantity,
-                    ship_family=ship_family,
-                    ship_first=ship_first,
-                    prefecture=prefecture,
-                    asin=item_number.upper() if is_asin(item_number) else "",
-                )
-            )
+            rows.append(LedgerRow(order_date=order_date, item_name=str(first_value(item, "itemName") or "").strip(), item_number=item_number, order_number=order_number, unit_price=unit_price, quantity=quantity, sales_amount=package_total or unit_price * quantity, ship_family=ship_family, ship_first=ship_first, prefecture=prefecture, asin=item_number.upper() if is_asin(item_number) else ""))
     return rows
 
 
@@ -301,20 +275,7 @@ def ledger_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for row in rows:
         name_cell = {"userEnteredValue": {"formulaValue": f'=HYPERLINK("{RETAIL_URL.format(item_number=row.item_number)}","{escape_formula(row.item_name)}")'}} if row.item_number else cell_string(row.item_name)
-        formatted.append(
-            {"values": [
-                {"userEnteredValue": {"numberValue": serial_date(row.order_date)}},
-                name_cell,
-                cell_string(row.item_number),
-                cell_string(row.order_number),
-                {"userEnteredValue": {"numberValue": row.unit_price}},
-                {"userEnteredValue": {"numberValue": row.quantity}},
-                {"userEnteredValue": {"numberValue": row.sales_amount}},
-                cell_string(row.ship_family),
-                cell_string(row.ship_first),
-                cell_string(row.prefecture),
-            ]}
-        )
+        formatted.append({"values": [{"userEnteredValue": {"numberValue": serial_date(row.order_date)}}, name_cell, cell_string(row.item_number), cell_string(row.order_number), {"userEnteredValue": {"numberValue": row.unit_price}}, {"userEnteredValue": {"numberValue": row.quantity}}, {"userEnteredValue": {"numberValue": row.sales_amount}}, cell_string(row.ship_family), cell_string(row.ship_first), cell_string(row.prefecture)]})
     return formatted
 
 
@@ -322,17 +283,7 @@ def asin_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for row in rows:
         if row.asin:
-            formatted.append(
-                {
-                    "values": [
-                        {
-                            "userEnteredValue": {
-                                "formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'
-                            }
-                        }
-                    ]
-                }
-            )
+            formatted.append({"values": [{"userEnteredValue": {"formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'}}}]})
         else:
             formatted.append({"values": []})
     return formatted
