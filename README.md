@@ -16,12 +16,26 @@ Standalone Python runner for appending Rakuten RMS shipping-waiting orders to th
 - `.github/workflows/rms-sync.yml`: scheduled GitHub Actions runner
 - `.github/workflows/validate.yml`: syntax check workflow
 
+## Credentials
+For GitHub Actions, use a Google service account JSON instead of a short-lived access token.
+- Create a Google Cloud project.
+- Enable the Google Sheets API.
+- Create a service account key JSON.
+- Share the spreadsheet with the service account email as an editor.
+- Store the full JSON as the `GOOGLE_SERVICE_ACCOUNT_JSON` GitHub secret.
+
+## Spreadsheet ID
+The spreadsheet ID is the long string in the Sheets URL:
+- `https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit...`
+- For this ledger, the ID is `1wOqqEtElzHyxOQLfmGcjbqNxQXWcJmtNOxJwk5s2M_o`
+
 ## Environment variables
 Copy `.env.example` and fill in the values:
 - `RMS_SERVICE_SECRET`
 - `RMS_LICENSE_KEY`
-- `GOOGLE_SHEETS_ACCESS_TOKEN`
-- `GOOGLE_SHEETS_SPREADSHEET_ID` (optional; defaults to the provided spreadsheet)
+- `GOOGLE_SERVICE_ACCOUNT_JSON` (recommended)
+- `GOOGLE_SHEETS_ACCESS_TOKEN` (optional; manual one-off testing only)
+- `GOOGLE_SHEETS_SPREADSHEET_ID`
 - `RMS_API_BASE` (optional)
 - `GOOGLE_SHEETS_API_BASE` (optional)
 - `RUN_AT_ISO8601` (optional; useful for testing/backfills)
@@ -30,7 +44,7 @@ Copy `.env.example` and fill in the values:
 To run the scheduled workflow, set these repository secrets:
 - `RMS_SERVICE_SECRET`
 - `RMS_LICENSE_KEY`
-- `GOOGLE_SHEETS_ACCESS_TOKEN`
+- `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
 
 ## Run
