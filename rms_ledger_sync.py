@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import dataclasses
 import datetime as dt
+import json
 import os
 import re
 from typing import Any
 
 import requests
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
 
 SPREADSHEET_ID = os.getenv(
     "GOOGLE_SHEETS_SPREADSHEET_ID",
@@ -23,6 +26,7 @@ LOOKBACK_DAYS = 31
 ORDER_PROGRESS = [300]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
+GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -67,6 +71,23 @@ def rms_session() -> requests.Session:
         }
     )
     return session
+
+
+def resolve_google_access_token() -> str:
+    token = os.getenv("GOOGLE_SHEETS_ACCESS_TOKEN")
+    if token:
+        return token
+
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        info = json.loads(sa_json)
+        credentials = service_account.Credentials.from_service_account_info(info, scopes=[GOOGLE_SHEETS_SCOPE])
+        credentials.refresh(GoogleAuthRequest())
+        if not credentials.token:
+            raise RuntimeError("Failed to obtain Google access token from service account JSON")
+        return credentials.token
+
+    raise RuntimeError("Missing Google Sheets credentials: set GOOGLE_SHEETS_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON")
 
 
 def sheets_headers(token: str) -> dict[str, str]:
@@ -443,7 +464,7 @@ def next_available_row(token: str) -> int:
 
 
 def main() -> int:
-    token = os.environ["GOOGLE_SHEETS_ACCESS_TOKEN"]
+    token = resolve_google_access_token()
     run_at = jst_now()
     spreadsheet = spreadsheet_meta(token)
     ledger_sheet_id = ensure_sheet(token, spreadsheet, LEDGER_SHEET_NAME)
