@@ -283,7 +283,17 @@ def asin_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for row in rows:
         if row.asin:
-            formatted.append({"values": [{"userEnteredValue": {"formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'}}}]})
+            formatted.append(
+                {
+                    "values": [
+                        {
+                            "userEnteredValue": {
+                                "formulaValue": f'=HYPERLINK("{AMAZON_URL.format(asin=row.asin)}","{row.asin}")'
+                            }
+                        }
+                    ]
+                }
+            )
         else:
             formatted.append({"values": []})
     return formatted
