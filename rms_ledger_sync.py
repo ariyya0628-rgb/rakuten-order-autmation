@@ -24,7 +24,7 @@ GOOGLE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 JST = dt.timezone(dt.timedelta(hours=9))
 LOOKBACK_DAYS = 31
 MAX_SEARCH_WINDOW_DAYS = 15
-ORDER_PROGRESS = [300]
+ORDER_PROGRESS = [100, 200, 300, 400, 500, 600, 700]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
 
@@ -55,9 +55,9 @@ def jst_now() -> dt.datetime:
 
 
 def rms_auth_header() -> str:
-    token = base64.b64encode(
-        f"{os.environ['RMS_SERVICE_SECRET']}:{os.environ['RMS_LICENSE_KEY']}".encode()
-    ).decode()
+    service_secret = os.environ["RMS_SERVICE_SECRET"].strip()
+    license_key = os.environ["RMS_LICENSE_KEY"].strip()
+    token = base64.b64encode(f"{service_secret}:{license_key}".encode()).decode().rstrip("=")
     return f"ESA {token}"
 
 
