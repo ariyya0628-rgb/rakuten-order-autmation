@@ -55,18 +55,20 @@ def jst_now() -> dt.datetime:
     return dt.datetime.now(JST)
 
 
-def rms_auth_header() -> str:
+def rms_auth_header(*, trim_padding: bool = False) -> str:
     service_secret = os.environ["RMS_SERVICE_SECRET"].strip()
     license_key = os.environ["RMS_LICENSE_KEY"].strip()
     token = base64.b64encode(f"{service_secret}:{license_key}".encode()).decode()
+    if trim_padding:
+        token = token.rstrip("=")
     return f"ESA {token}"
 
 
-def rms_session() -> requests.Session:
+def rms_session(*, trim_auth_padding: bool = False) -> requests.Session:
     session = requests.Session()
     session.headers.update(
         {
-            "Authorization": rms_auth_header(),
+            "Authorization": rms_auth_header(trim_padding=trim_auth_padding),
             "Content-Type": "application/json; charset=utf-8",
             "Accept": "application/json",
         }
@@ -232,6 +234,9 @@ def post_search_orders(
         ),
         ("dateType4_only", search_payload(window_start, window_end, page, date_type=4, include_progress=False)),
     ]
+    sorted_30 = search_payload(window_start, window_end, page, date_type=4, include_progress=False, include_sort=True)
+    sorted_30["PaginationRequestModel"]["requestRecordsAmount"] = 30
+    base_variants.append(("dateType4_sorted_30", sorted_30))
     variants = [
         (f"rpay.order.searchOrder.{label}", RMS_SEARCH_ENDPOINT, payload)
         for label, payload in base_variants
@@ -552,8 +557,19 @@ def main() -> int:
     log_sheet_id = ensure_sheet(token, meta, LOG_SHEET_NAME)
     search_count = added_count = skipped_count = 0
     try:
-        session = rms_session()
-        order_numbers = search_orders(session, run_at - dt.timedelta(days=LOOKBACK_DAYS), run_at)
+        order_numbers: list[str] | None = None
+        auth_errors: list[str] = []
+        for auth_label, trim_auth_padding in [("base64_padded", False), ("base64_no_padding", True)]:
+            print(f"rms_auth_variant={auth_label}")
+            try:
+                session = rms_session(trim_auth_padding=trim_auth_padding)
+                order_numbers = search_orders(session, run_at - dt.timedelta(days=LOOKBACK_DAYS), run_at)
+                break
+            except RuntimeError as exc:
+                auth_errors.append(f"{auth_label}: {exc}")
+                print(f"rms_auth_variant_failed={auth_label} detail={type(exc).__name__}: {exc}")
+        if order_numbers is None:
+            raise RuntimeError(" / ".join(auth_errors) or "RMS search failed before returning order numbers")
         search_count = len(order_numbers)
         if not order_numbers:
             append_log(token, log_sheet_id, run_at, 0, 0, 0, "")
