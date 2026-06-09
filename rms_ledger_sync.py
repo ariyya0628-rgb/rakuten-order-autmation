@@ -195,14 +195,26 @@ def search_windows(start: dt.datetime, end: dt.datetime) -> list[tuple[dt.dateti
     return list(reversed(windows))
 
 
-def search_payload(window_start: dt.datetime, window_end: dt.datetime, page: int) -> dict[str, Any]:
-    return {
-        "dateType": 1,
+def search_payload(
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+    page: int,
+    *,
+    date_type: int = 1,
+    include_progress: bool = True,
+    include_sort: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "dateType": date_type,
         "startDatetime": as_rms_datetime(window_start),
         "endDatetime": as_rms_datetime(window_end),
-        "orderProgressList": ORDER_PROGRESS,
         "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page},
     }
+    if include_progress:
+        payload["orderProgressList"] = ORDER_PROGRESS
+    if include_sort:
+        payload["PaginationRequestModel"]["SortModelList"] = [{"sortColumn": 1, "sortDirection": 1}]
+    return payload
 
 
 def post_search_orders(
@@ -211,10 +223,21 @@ def post_search_orders(
     window_end: dt.datetime,
     page: int,
 ) -> Any:
-    payload = search_payload(window_start, window_end, page)
+    base_variants = [
+        ("dateType1_progress", search_payload(window_start, window_end, page, date_type=1, include_progress=True)),
+        ("dateType1_only", search_payload(window_start, window_end, page, date_type=1, include_progress=False)),
+        (
+            "dateType4_sorted",
+            search_payload(window_start, window_end, page, date_type=4, include_progress=False, include_sort=True),
+        ),
+        ("dateType4_only", search_payload(window_start, window_end, page, date_type=4, include_progress=False)),
+    ]
     variants = [
-        ("rpay.order.searchOrder", RMS_SEARCH_ENDPOINT, payload),
-        ("purchaseitem.searchOrderItem", RMS_PURCHASE_SEARCH_ENDPOINT, payload),
+        (f"rpay.order.searchOrder.{label}", RMS_SEARCH_ENDPOINT, payload)
+        for label, payload in base_variants
+    ] + [
+        (f"purchaseitem.searchOrderItem.{label}", RMS_PURCHASE_SEARCH_ENDPOINT, payload)
+        for label, payload in base_variants
     ]
     last_error: RuntimeError | None = None
     for label, path, variant_payload in variants:
