@@ -29,6 +29,55 @@ MAX_SEARCH_WINDOW_DAYS = 15
 ORDER_PROGRESS = [100, 200, 300, 400]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
+PREFECTURE_AREAS = {
+    "北海道": "北海道",
+    "青森県": "東北",
+    "岩手県": "東北",
+    "宮城県": "東北",
+    "秋田県": "東北",
+    "山形県": "東北",
+    "福島県": "東北",
+    "茨城県": "信越・関東",
+    "栃木県": "信越・関東",
+    "群馬県": "信越・関東",
+    "埼玉県": "信越・関東",
+    "千葉県": "信越・関東",
+    "東京都": "信越・関東",
+    "神奈川県": "信越・関東",
+    "新潟県": "信越・関東",
+    "山梨県": "信越・関東",
+    "長野県": "信越・関東",
+    "富山県": "北陸・中部",
+    "石川県": "北陸・中部",
+    "福井県": "北陸・中部",
+    "岐阜県": "北陸・中部",
+    "静岡県": "北陸・中部",
+    "愛知県": "北陸・中部",
+    "三重県": "北陸・中部",
+    "滋賀県": "関西",
+    "京都府": "関西",
+    "大阪府": "関西",
+    "兵庫県": "関西",
+    "奈良県": "関西",
+    "和歌山県": "関西",
+    "鳥取県": "中国・四国",
+    "島根県": "中国・四国",
+    "岡山県": "中国・四国",
+    "広島県": "中国・四国",
+    "山口県": "中国・四国",
+    "徳島県": "中国・四国",
+    "香川県": "中国・四国",
+    "愛媛県": "中国・四国",
+    "高知県": "中国・四国",
+    "福岡県": "九州",
+    "佐賀県": "九州",
+    "長崎県": "九州",
+    "熊本県": "九州",
+    "大分県": "九州",
+    "宮崎県": "九州",
+    "鹿児島県": "九州",
+    "沖縄県": "沖縄",
+}
 
 
 def rms_secret_diagnostics() -> None:
@@ -65,6 +114,7 @@ class LedgerRow:
     ship_family: str
     ship_first: str
     prefecture: str
+    prefecture_area: str
     asin: str = ""
 
 
@@ -319,7 +369,7 @@ def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetim
 def get_orders(session: requests.Session, order_numbers: list[str]) -> list[dict[str, Any]]:
     orders: list[dict[str, Any]] = []
     for index in range(0, len(order_numbers), 100):
-        data = rms_post(session, RMS_GET_ENDPOINT, {"orderNumberList": order_numbers[index : index + 100]})
+        data = rms_post(session, RMS_GET_ENDPOINT, {"orderNumberList": order_numbers[index : index + 100], "version": 7})
         orders.extend(data.get("OrderModelList") or data.get("orderModelList") or [])
     return orders
 
@@ -378,15 +428,44 @@ def is_asin(value: str) -> bool:
     return bool(re.fullmatch(r"B[A-Z0-9]{9}", value.upper()))
 
 
+def first_model(obj: Any, *keys: str) -> dict[str, Any]:
+    found = first_value(obj, *keys)
+    if isinstance(found, dict):
+        return found
+    return {}
+
+
+def recipient_from_order(order: dict[str, Any], package: dict[str, Any]) -> tuple[str, str, str, str]:
+    recipient = first_model(
+        package,
+        "SenderModel",
+        "senderModel",
+        "DeliveryModel",
+        "deliveryModel",
+        "ShippingModel",
+        "shippingModel",
+    )
+    if not recipient:
+        recipient = first_model(
+            order,
+            "SenderModel",
+            "senderModel",
+            "DeliveryModel",
+            "deliveryModel",
+            "ShippingModel",
+            "shippingModel",
+            "ordererModel",
+        )
+    family = str(first_value(recipient, "familyName", "lastName") or "").strip()
+    first = str(first_value(recipient, "firstName", "givenName") or "").strip()
+    prefecture = str(first_value(recipient, "prefecture") or "").strip()
+    area = PREFECTURE_AREAS.get(prefecture, "")
+    return family, first, prefecture, area
+
+
 def rows_from_order(order: dict[str, Any]) -> list[LedgerRow]:
     order_number = str(first_value(order, "orderNumber") or "").strip()
     order_date = parse_dt(first_value(order, "orderDatetime", "orderDate", "orderTime", "orderAcceptedDatetime"))
-    orderer = first_value(order, "ordererModel") or {}
-    if not isinstance(orderer, dict):
-        orderer = {}
-    ship_family = str(first_value(orderer, "familyName") or "").strip()
-    ship_first = str(first_value(orderer, "firstName") or "").strip()
-    prefecture = str(first_value(orderer, "prefecture") or "").strip()
     packages = first_value(order, "PackageModelList", "packageModelList") or [{}]
     if not isinstance(packages, list):
         packages = [packages]
@@ -399,6 +478,7 @@ def rows_from_order(order: dict[str, Any]) -> list[LedgerRow]:
         if not isinstance(items, list):
             items = [items]
         package_total = as_int(package.get("goodsPrice") or package.get("totalPrice"))
+        ship_family, ship_first, prefecture, prefecture_area = recipient_from_order(order, package)
         for item in items:
             if not isinstance(item, dict):
                 item = {}
@@ -417,6 +497,7 @@ def rows_from_order(order: dict[str, Any]) -> list[LedgerRow]:
                     ship_family=ship_family,
                     ship_first=ship_first,
                     prefecture=prefecture,
+                    prefecture_area=prefecture_area,
                     asin=item_number.upper() if is_asin(item_number) else "",
                 )
             )
@@ -454,6 +535,7 @@ def ledger_rows(rows: list[LedgerRow]) -> list[dict[str, Any]]:
                     cell_string(row.ship_family),
                     cell_string(row.ship_first),
                     cell_string(row.prefecture),
+                    cell_string(row.prefecture_area),
                 ]
             }
         )
@@ -490,14 +572,14 @@ def build_append_requests(sheet_id_value: int, start_row_index: int, rows: list[
                     "startRowIndex": source_row,
                     "endRowIndex": source_row + 1,
                     "startColumnIndex": 1,
-                    "endColumnIndex": 11,
+                    "endColumnIndex": 12,
                 },
                 "destination": {
                     "sheetId": sheet_id_value,
                     "startRowIndex": start_row_index,
                     "endRowIndex": start_row_index + len(rows),
                     "startColumnIndex": 1,
-                    "endColumnIndex": 11,
+                    "endColumnIndex": 12,
                 },
                 "pasteType": "PASTE_FORMAT",
             }
@@ -528,7 +610,7 @@ def build_append_requests(sheet_id_value: int, start_row_index: int, rows: list[
                     "startRowIndex": start_row_index,
                     "endRowIndex": start_row_index + len(rows),
                     "startColumnIndex": 1,
-                    "endColumnIndex": 11,
+                    "endColumnIndex": 12,
                 },
                 "rows": ledger_rows(rows),
                 "fields": "userEnteredValue",
