@@ -31,6 +31,28 @@ RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
 
 
+def rms_secret_diagnostics() -> None:
+    raw_service_secret = os.environ.get("RMS_SERVICE_SECRET", "")
+    raw_license_key = os.environ.get("RMS_LICENSE_KEY", "")
+    service_secret = raw_service_secret.strip()
+    license_key = raw_license_key.strip()
+    print(
+        "rms_secret_check "
+        f"service_raw_len={len(raw_service_secret)} "
+        f"service_trim_len={len(service_secret)} "
+        f"service_prefix_ok={'yes' if service_secret.startswith('SP') else 'no'} "
+        f"service_has_quotes={'yes' if any(ch in raw_service_secret for ch in [chr(34), chr(39)]) else 'no'} "
+        f"license_raw_len={len(raw_license_key)} "
+        f"license_trim_len={len(license_key)} "
+        f"license_prefix_ok={'yes' if license_key.startswith('SL') else 'no'} "
+        f"license_has_quotes={'yes' if any(ch in raw_license_key for ch in [chr(34), chr(39)]) else 'no'}"
+    )
+    if not service_secret or not license_key:
+        raise RuntimeError("RMS_SERVICE_SECRET or RMS_LICENSE_KEY is empty after trimming spaces")
+    if not service_secret.startswith("SP") or not license_key.startswith("SL"):
+        raise RuntimeError("RMS_SERVICE_SECRET should start with SP and RMS_LICENSE_KEY should start with SL")
+
+
 @dataclasses.dataclass(frozen=True)
 class LedgerRow:
     order_date: dt.datetime | None
@@ -570,6 +592,7 @@ def main() -> int:
     log_sheet_id = ensure_sheet(token, meta, LOG_SHEET_NAME)
     search_count = added_count = skipped_count = 0
     try:
+        rms_secret_diagnostics()
         order_numbers: list[str] | None = None
         auth_errors: list[str] = []
         for auth_label, trim_auth_padding in [("base64_padded", False), ("base64_no_padding", True)]:
