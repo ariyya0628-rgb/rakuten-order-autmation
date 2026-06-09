@@ -24,9 +24,9 @@ RMS_GET_ENDPOINT = "/es/2.0/order/getOrder/"
 RMS_LICENSE_ENDPOINT = "/es/1.0/license-management/license-key/expiry-date"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 JST = dt.timezone(dt.timedelta(hours=9))
-LOOKBACK_DAYS = 31
+LOOKBACK_DAYS = 63
 MAX_SEARCH_WINDOW_DAYS = 15
-ORDER_PROGRESS = [100, 200, 300, 400]
+ORDER_PROGRESS = [300]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
 PREFECTURE_AREAS = {
@@ -257,6 +257,18 @@ def existing_order_numbers(token: str) -> set[str]:
     }
 
 
+def rows_needing_recipient_backfill(token: str) -> dict[str, list[int]]:
+    pending: dict[str, list[int]] = {}
+    for row_index, row in enumerate(values_get(token, LEDGER_SHEET_NAME, "A:L")[2:], start=2):
+        order_number = str(row[4]).strip() if len(row) > 4 else ""
+        if not order_number:
+            continue
+        recipient_values = [str(row[index]).strip() if len(row) > index else "" for index in range(8, 12)]
+        if not all(recipient_values):
+            pending.setdefault(order_number, []).append(row_index)
+    return pending
+
+
 def as_rms_datetime(value: dt.datetime) -> str:
     return value.astimezone(JST).strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -309,19 +321,14 @@ def post_search_orders(
     window_start: dt.datetime,
     window_end: dt.datetime,
     page: int,
+    date_type: int = 1,
 ) -> Any:
     base_variants = [
-        ("dateType1_progress", search_payload(window_start, window_end, page, date_type=1, include_progress=True)),
-        ("dateType1_only", search_payload(window_start, window_end, page, date_type=1, include_progress=False)),
         (
-            "dateType4_sorted",
-            search_payload(window_start, window_end, page, date_type=4, include_progress=False, include_sort=True),
+            f"dateType{date_type}_shipping_wait",
+            search_payload(window_start, window_end, page, date_type=date_type, include_progress=True),
         ),
-        ("dateType4_only", search_payload(window_start, window_end, page, date_type=4, include_progress=False)),
     ]
-    sorted_30 = search_payload(window_start, window_end, page, date_type=4, include_progress=False, include_sort=True)
-    sorted_30["PaginationRequestModel"]["requestRecordsAmount"] = 30
-    base_variants.append(("dateType4_sorted_30", sorted_30))
     variants = [
         (f"rpay.order.searchOrder.{label}", RMS_SEARCH_ENDPOINT, payload)
         for label, payload in base_variants
@@ -343,17 +350,17 @@ def post_search_orders(
     raise RuntimeError("No RMS search endpoint variants were configured")
 
 
-def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
+def search_orders_by_date_type(session: requests.Session, start: dt.datetime, end: dt.datetime, date_type: int) -> list[str]:
     seen: dict[str, None] = {}
     for window_index, (window_start, window_end) in enumerate(search_windows(start, end), start=1):
         page = 1
         while True:
-            payload = search_payload(window_start, window_end, page)
+            payload = search_payload(window_start, window_end, page, date_type=date_type, include_progress=True)
             print(
-                f"searchOrder_window={window_index} page={page} "
+                f"searchOrder_dateType={date_type} window={window_index} page={page} "
                 f"start={payload['startDatetime']} end={payload['endDatetime']}"
             )
-            data = post_search_orders(session, window_start, window_end, page)
+            data = post_search_orders(session, window_start, window_end, page, date_type=date_type)
             for number in data.get("orderNumberList") or []:
                 value = str(number).strip()
                 if value:
@@ -363,6 +370,14 @@ def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetim
             if page >= total_pages:
                 break
             page += 1
+    return list(seen.keys())
+
+
+def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
+    seen: dict[str, None] = {}
+    for date_type in (1, 6):
+        for number in search_orders_by_date_type(session, start, end, date_type):
+            seen[number] = None
     return list(seen.keys())
 
 
@@ -662,6 +677,48 @@ def append_log(
     )
 
 
+def build_recipient_backfill_requests(
+    sheet_id_value: int,
+    pending_rows: dict[str, list[int]],
+    orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    for order in orders:
+        order_number = str(first_value(order, "orderNumber") or "").strip()
+        if order_number not in pending_rows:
+            continue
+        packages = first_value(order, "PackageModelList", "packageModelList") or [{}]
+        package = packages[0] if isinstance(packages, list) and packages else packages
+        if not isinstance(package, dict):
+            package = {}
+        family, first, prefecture, area = recipient_from_order(order, package)
+        row_data = {
+            "values": [
+                cell_string(family),
+                cell_string(first),
+                cell_string(prefecture),
+                cell_string(area),
+            ]
+        }
+        for row_index in pending_rows[order_number]:
+            requests.append(
+                {
+                    "updateCells": {
+                        "range": {
+                            "sheetId": sheet_id_value,
+                            "startRowIndex": row_index,
+                            "endRowIndex": row_index + 1,
+                            "startColumnIndex": 8,
+                            "endColumnIndex": 12,
+                        },
+                        "rows": [row_data],
+                        "fields": "userEnteredValue",
+                    }
+                }
+            )
+    return requests
+
+
 def next_available_row(token: str) -> int:
     return max(len(values_get(token, LEDGER_SHEET_NAME, "E:E")), 2) + 1
 
@@ -695,29 +752,37 @@ def main() -> int:
             print("added=0 error=none")
             return 0
 
+        pending_recipient_rows = rows_needing_recipient_backfill(token)
         existing = existing_order_numbers(token)
         new_order_numbers = [number for number in order_numbers if number not in existing]
         skipped_count = search_count - len(new_order_numbers)
-        if not new_order_numbers:
+        backfill_order_numbers = [number for number in order_numbers if number in pending_recipient_rows]
+        if not new_order_numbers and not backfill_order_numbers:
             append_log(token, log_sheet_id, run_at, search_count, 0, skipped_count, "")
             print("added=0 error=none")
             return 0
 
         rows: list[LedgerRow] = []
-        for order in get_orders(session, new_order_numbers):
-            rows.extend(rows_from_order(order))
+        orders = get_orders(session, sorted(set(new_order_numbers + backfill_order_numbers)))
+        for order in orders:
+            if str(first_value(order, "orderNumber") or "").strip() in new_order_numbers:
+                rows.extend(rows_from_order(order))
         if not rows:
-            raise RuntimeError("No ledger rows extracted from RMS order payload")
+            backfill_requests = build_recipient_backfill_requests(ledger_sheet_id, pending_recipient_rows, orders)
+            if backfill_requests:
+                sheets_post(token, f"/spreadsheets/{SPREADSHEET_ID}:batchUpdate", {"requests": backfill_requests})
+            append_log(token, log_sheet_id, run_at, search_count, 0, skipped_count, "")
+            print(f"added=0 backfilled={len(backfill_requests)} error=none")
+            return 0
 
         start_row = max(next_available_row(token) - 1, 0)
-        sheets_post(
-            token,
-            f"/spreadsheets/{SPREADSHEET_ID}:batchUpdate",
-            {"requests": build_append_requests(ledger_sheet_id, start_row, rows)},
-        )
+        requests = build_append_requests(ledger_sheet_id, start_row, rows)
+        backfill_requests = build_recipient_backfill_requests(ledger_sheet_id, pending_recipient_rows, orders)
+        requests.extend(backfill_requests)
+        sheets_post(token, f"/spreadsheets/{SPREADSHEET_ID}:batchUpdate", {"requests": requests})
         added_count = len(rows)
         append_log(token, log_sheet_id, run_at, search_count, added_count, skipped_count, "")
-        print(f"added={added_count} error=none")
+        print(f"added={added_count} backfilled={len(backfill_requests)} error=none")
         return 0
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
