@@ -20,6 +20,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Add RMS getOrder version
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('rms_ledger_sync.py')
+          text = path.read_text(encoding='utf-8')
+          old = '{"orderNumberList": order_numbers[index : index + 100]}'
+          new = '{"orderNumberList": order_numbers[index : index + 100], "version": 7}'
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          python -m py_compile rms_ledger_sync.py
+
       - name: Run RMS ledger sync
         env:
           RMS_SERVICE_SECRET: ${{ secrets.RMS_SERVICE_SECRET }}
