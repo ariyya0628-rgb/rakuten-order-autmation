@@ -24,7 +24,7 @@ GOOGLE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 JST = dt.timezone(dt.timedelta(hours=9))
 LOOKBACK_DAYS = 31
 MAX_SEARCH_WINDOW_DAYS = 15
-ORDER_PROGRESS = [100, 200, 300, 400, 500, 600, 700]
+ORDER_PROGRESS = [100, 200, 300, 400]
 RETAIL_URL = "https://item.rakuten.co.jp/trenditemshop/{item_number}/?variantId=00"
 AMAZON_URL = "https://www.amazon.co.jp/dp/{asin}"
 
@@ -204,16 +204,13 @@ def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetim
                 "startDatetime": as_rms_datetime(window_start),
                 "endDatetime": as_rms_datetime(window_end),
                 "orderProgressList": ORDER_PROGRESS,
-                "PaginationRequestModel": {
-                    "requestRecordsAmount": 1000,
-                    "requestPage": page,
-                    "SortModelList": [{"sortColumn": 1, "sortDirection": 1}],
-                },
+                "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page},
             }
             print(
                 f"searchOrder_window={window_index} page={page} "
                 f"start={payload['startDatetime']} end={payload['endDatetime']}"
             )
+            print(f"searchOrder_payload={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
             data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
             for number in data.get("orderNumberList") or []:
                 value = str(number).strip()
