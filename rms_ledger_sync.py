@@ -19,6 +19,7 @@ LOG_SHEET_NAME = "自動取込ログ"
 RMS_BASE = os.getenv("RMS_API_BASE", "https://api.rms.rakuten.co.jp").rstrip("/")
 SHEETS_BASE = os.getenv("GOOGLE_SHEETS_API_BASE", "https://sheets.googleapis.com/v4").rstrip("/")
 RMS_SEARCH_ENDPOINT = "/es/2.0/order/searchOrder/"
+RMS_PURCHASE_SEARCH_ENDPOINT = "/es/2.0/purchaseItem/searchOrderItem/"
 RMS_GET_ENDPOINT = "/es/2.0/order/getOrder/"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 JST = dt.timezone(dt.timedelta(hours=9))
@@ -194,24 +195,52 @@ def search_windows(start: dt.datetime, end: dt.datetime) -> list[tuple[dt.dateti
     return list(reversed(windows))
 
 
+def search_payload(window_start: dt.datetime, window_end: dt.datetime, page: int) -> dict[str, Any]:
+    return {
+        "dateType": 1,
+        "startDatetime": as_rms_datetime(window_start),
+        "endDatetime": as_rms_datetime(window_end),
+        "orderProgressList": ORDER_PROGRESS,
+        "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page},
+    }
+
+
+def post_search_orders(
+    session: requests.Session,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+    page: int,
+) -> Any:
+    payload = search_payload(window_start, window_end, page)
+    variants = [
+        ("rpay.order.searchOrder", RMS_SEARCH_ENDPOINT, payload),
+        ("purchaseitem.searchOrderItem", RMS_PURCHASE_SEARCH_ENDPOINT, payload),
+    ]
+    last_error: RuntimeError | None = None
+    for label, path, variant_payload in variants:
+        print(f"searchOrder_variant={label}")
+        print(f"searchOrder_payload={json.dumps(variant_payload, ensure_ascii=False, separators=(',', ':'))}")
+        try:
+            return rms_post(session, path, variant_payload)
+        except RuntimeError as exc:
+            last_error = exc
+            print(f"searchOrder_variant_failed={label} detail={type(exc).__name__}: {exc}")
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No RMS search endpoint variants were configured")
+
+
 def search_orders(session: requests.Session, start: dt.datetime, end: dt.datetime) -> list[str]:
     seen: dict[str, None] = {}
     for window_index, (window_start, window_end) in enumerate(search_windows(start, end), start=1):
         page = 1
         while True:
-            payload = {
-                "dateType": 1,
-                "startDatetime": as_rms_datetime(window_start),
-                "endDatetime": as_rms_datetime(window_end),
-                "orderProgressList": ORDER_PROGRESS,
-                "PaginationRequestModel": {"requestRecordsAmount": 1000, "requestPage": page},
-            }
+            payload = search_payload(window_start, window_end, page)
             print(
                 f"searchOrder_window={window_index} page={page} "
                 f"start={payload['startDatetime']} end={payload['endDatetime']}"
             )
-            print(f"searchOrder_payload={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
-            data = rms_post(session, RMS_SEARCH_ENDPOINT, payload)
+            data = post_search_orders(session, window_start, window_end, page)
             for number in data.get("orderNumberList") or []:
                 value = str(number).strip()
                 if value:
