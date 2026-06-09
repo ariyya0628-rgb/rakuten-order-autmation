@@ -57,7 +57,7 @@ def jst_now() -> dt.datetime:
 def rms_auth_header() -> str:
     service_secret = os.environ["RMS_SERVICE_SECRET"].strip()
     license_key = os.environ["RMS_LICENSE_KEY"].strip()
-    token = base64.b64encode(f"{service_secret}:{license_key}".encode()).decode().rstrip("=")
+    token = base64.b64encode(f"{service_secret}:{license_key}".encode()).decode()
     return f"ESA {token}"
 
 
