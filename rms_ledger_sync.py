@@ -21,6 +21,7 @@ SHEETS_BASE = os.getenv("GOOGLE_SHEETS_API_BASE", "https://sheets.googleapis.com
 RMS_SEARCH_ENDPOINT = "/es/2.0/order/searchOrder/"
 RMS_PURCHASE_SEARCH_ENDPOINT = "/es/2.0/purchaseItem/searchOrderItem/"
 RMS_GET_ENDPOINT = "/es/2.0/order/getOrder/"
+RMS_LICENSE_ENDPOINT = "/es/1.0/license-management/license-key/expiry-date"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 JST = dt.timezone(dt.timedelta(hours=9))
 LOOKBACK_DAYS = 31
@@ -105,7 +106,8 @@ def request_json(
         raise RuntimeError(f"{method} {url} failed before response: {exc}") from exc
     if response.status_code >= 400:
         detail = response.text.strip().replace("\n", " ")[:1200]
-        raise RuntimeError(f"{method} {response.url} returned HTTP {response.status_code}: {detail}")
+        safe_url = re.sub(r"(licenseKey=)[^&]+", r"\1***", response.url)
+        raise RuntimeError(f"{method} {safe_url} returned HTTP {response.status_code}: {detail}")
     if not response.text.strip():
         return {}
     return response.json()
@@ -125,6 +127,17 @@ def sheets_post(token: str, path: str, body: dict[str, Any]) -> Any:
 
 def rms_post(session: requests.Session, path: str, body: dict[str, Any]) -> Any:
     return request_json("POST", f"{RMS_BASE}{path}", headers=session.headers, body=body)
+
+
+def rms_get(session: requests.Session, path: str, params: dict[str, Any] | None = None) -> Any:
+    return request_json("GET", f"{RMS_BASE}{path}", headers=session.headers, params=params)
+
+
+def check_rms_license(session: requests.Session) -> None:
+    license_key = os.environ["RMS_LICENSE_KEY"].strip()
+    data = rms_get(session, RMS_LICENSE_ENDPOINT, {"licenseKey": license_key})
+    expiry = data.get("expiryDate") if isinstance(data, dict) else None
+    print(f"rms_license_check=ok expiryDate={expiry or 'unknown'}")
 
 
 def quote_range(sheet: str, a1: str) -> str:
@@ -563,6 +576,7 @@ def main() -> int:
             print(f"rms_auth_variant={auth_label}")
             try:
                 session = rms_session(trim_auth_padding=trim_auth_padding)
+                check_rms_license(session)
                 order_numbers = search_orders(session, run_at - dt.timedelta(days=LOOKBACK_DAYS), run_at)
                 break
             except RuntimeError as exc:
